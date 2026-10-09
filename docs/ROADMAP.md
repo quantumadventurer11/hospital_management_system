@@ -1,31 +1,38 @@
 # Improvement roadmap
 
-This is a plan for future code changes. The repository cleanup that added this document did not modify `hospital_management_system.py`.
+## Addressed in the debugging pass
 
-## 1. Protect patient data and access
+- New physician registration now creates an active session. The GUI explains that new accounts require an explicit save to survive a restart and provides a **Load Saved Data** button.
+- Protected service actions require a registered user and an active session.
+- The default `Appointment` and `Bed` constructors work, allowing the scripted demo to run.
+- Booking rejects reversed time ranges; billing rejects nonpositive or nonfinite amounts and unsupported payment methods.
+- Failed admissions no longer leave a bed occupied after a schedule conflict.
+- Completing an appointment twice and discharging a free bed are rejected.
+- Regression tests cover these cases; run `python -m unittest discover -s tests -v`.
 
-- Require a valid, active session for every protected service action. The current role helper skips session validation when the token is `None` ([`require_role`](../hospital_management_system.py#L859-L873)).
-- Check patient and clinician relationships for clinical actions, rather than relying on a role alone ([appointment booking](../hospital_management_system.py#L908-L949), [record entry](../hospital_management_system.py#L993-L1013)).
-- Restrict save/load and access to stored attachments. JSON currently includes clinical, financial, and credential-hash data and is written without encryption ([serialization](../hospital_management_system.py#L1340-L1496), [save/load](../hospital_management_system.py#L1689-L1697)).
-- Remove predictable seed credentials from any mode intended beyond a local demo ([default users](../hospital_management_system.py#L638-L646)).
+## Next: patient data and access
 
-**Done when:** unauthenticated and out-of-scope actions are denied in automated tests; demo data is clearly separated from any future protected storage; saved data and attachments have a documented protection and recovery design.
+- Check patient and clinician relationships for clinical actions, rather than relying on a role alone.
+- Design protected storage and backup for saved data and attachments. JSON currently contains clinical, financial, and credential-hash data and is written without encryption.
+- Remove predictable seed credentials from any mode intended beyond a local demo.
+- Decide how to protect audit integrity independently of an editable JSON file.
 
-## 2. Fix correctness and validation
+**Done when:** out-of-scope clinical actions are denied in tests, and saved data and attachments have a documented protection and recovery design.
 
-- Validate appointment start/end order and duration, availability, and time-zone edge cases before booking ([booking](../hospital_management_system.py#L908-L940)).
-- Validate positive finite charges and payments, copay ranges, and payment methods; use `Decimal` for money ([billing](../hospital_management_system.py#L1084-L1115)).
-- Make admission atomic: reserve a bed only after patient, clinician, and schedule checks succeed ([admission](../hospital_management_system.py#L1140-L1170)).
-- Fix default `status` construction for `Appointment` and `Bed`, where the `InitVar` and property share a name ([appointment](../hospital_management_system.py#L317-L344), [bed](../hospital_management_system.py#L383-L406)).
+## Next: domain and workflow rules
 
-**Done when:** regression tests cover each failure and the relevant operations leave no partial state after an error.
+- Define appointment availability requirements and test time-zone edge cases, including daylight-saving transitions.
+- Use `Decimal` for money, validate insurance copay ranges, and define whether overpayments create credits or are rejected.
+- Add a workflow for moving a discharged bed from `cleaning` back to `free`; complete the remaining status-transition rules.
+- Make multi-step state changes atomic beyond the specific admission conflict fixed above.
 
-## 3. Make the project easier to maintain and assess
+**Done when:** edge cases have explicit rules and regression tests, and errors leave no partial state.
 
-- Move domain models, repositories, services, persistence, and GUI into separate modules while keeping the same behavior.
-- Add a conventional automated test suite for authorization, scheduling, billing, save/load, audit history, and the GUI-independent service layer. Run it in CI. The current built-in smoke check covers only a few paths ([smoke check](../hospital_management_system.py#L1699-L1808)).
-- Define supported Python versions and installation requirements, especially Tkinter and regional time-zone data. Add a repeatable launch command for the existing CLI function if that interface remains part of the project ([entry point](../hospital_management_system.py#L3807-L3838)).
-- Decide how to package attachment bytes with exports and how to protect audit integrity independently of an editable JSON file.
+## Next: maintainability and presentation
+
+- Move domain models, repositories, services, persistence, and GUI into separate modules while keeping behavior stable.
+- Extend automated tests to cover clinician scope, save/load failures, audit history, and the GUI; run them in CI.
+- Define supported Python versions and installation requirements, especially Tkinter and regional time-zone data. Expose the existing CLI function if that interface remains part of the project.
 - Add screenshots or a short screen recording using synthetic data, and describe design choices and lessons learned for a portfolio audience.
 
-**Done when:** a new reviewer can install, run, and test the prototype from the README, and can distinguish demonstrated features from planned production safeguards.
+**Done when:** a new reviewer can install, run, and test the prototype from the README and distinguish demonstrated features from planned safeguards.

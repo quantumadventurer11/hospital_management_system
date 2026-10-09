@@ -1,6 +1,6 @@
 # Hospital Management System
 
-An educational Python prototype exploring appointment scheduling, clinical records, billing, inpatient beds, role-based actions, and an audit trail. The project is a single-file application with a Tkinter desktop interface and a small built-in smoke check. A scripted demo is present but currently fails; see Known issues below.
+An educational Python prototype exploring appointment scheduling, clinical records, billing, inpatient beds, role-based actions, and an audit trail. The project is a single-file application with a Tkinter desktop interface, a scripted demo, a built-in smoke check, and regression tests.
 
 > **Use synthetic data only.** This is a course project, not a production hospital system. Its saved JSON and copied attachments are not encrypted, and the current authorization, validation, and persistence behavior needs more work before any real patient information could be used. An ignore file reduces accidental commits but does not secure local data.
 
@@ -10,10 +10,14 @@ The application was checked with Python 3.13. Python's Tkinter module and an IAN
 
 ```bash
 python hospital_management_system.py --smoke-test
+python hospital_management_system.py --demo
+python -m unittest discover -s tests -v
 python hospital_management_system.py
 ```
 
-The last command opens the Tkinter GUI; `--smoke-test` runs lightweight integration checks. A `run_cli()` function is present in the source, but the current command-line entry point does not expose it.
+The last command opens the Tkinter GUI; `--smoke-test` runs lightweight integration checks, and `--demo` prints a scripted example. A `run_cli()` function is present in the source, but the current command-line entry point does not expose it.
+
+Newly registered accounts stay in memory until you explicitly save hospital data. The registration flow offers to save, and **Load Saved Data** on the start screen restores a saved account after restarting the app. A save file is unencrypted JSON, so use synthetic data only.
 
 The GUI starts with demonstration accounts (`admin`, `clerk`, `nurse`, and `doctor`) and predictable passwords in the source. They are for local demonstration only. Do not use them to protect sensitive information.
 
@@ -30,12 +34,8 @@ The GUI starts with demonstration accounts (`admin`, `clerk`, `nurse`, and `doct
 - Saving writes patient, clinical, billing, credential-hash, and audit information as readable JSON. Choose a location appropriate for **synthetic** demo data, and do not publish save files.
 - Attachments are copied to `hospital_attachments/` relative to the working directory. A JSON save contains attachment paths, not the attachment bytes, so moving the JSON file by itself can break links.
 - The audit chain can detect some changes to a saved history, but it is not independently protected against someone who can rewrite the file.
-- The built-in smoke check covers a few successful paths and scheduling conflicts. It is not a comprehensive test suite.
+- The built-in smoke check covers a few successful paths and scheduling conflicts. The regression suite covers specific bugs, but neither is a comprehensive test suite.
 - No web service, multi-user database, encryption at rest, backup process, or production deployment is provided.
-
-## Known issues
-
-- `python hospital_management_system.py --demo` currently raises `ValidationError` when it creates a `Bed` without an explicit status. The default-status constructor also affects `Appointment`. See [the model definitions](hospital_management_system.py#L317-L406) and [the improvement roadmap](docs/ROADMAP.md). The passing smoke check does not cover this path.
 
 For specific code and security improvements, see [the prioritized roadmap](docs/ROADMAP.md).
 
@@ -43,6 +43,7 @@ For specific code and security improvements, see [the prioritized roadmap](docs/
 
 ```text
 hospital_management_system.py  Application, demo, and built-in smoke check
+tests/test_regressions.py     Account and workflow regression checks
 README.md                      Setup, scope, and limitations
 docs/ROADMAP.md                Proposed improvement plan
 .gitignore                     Local data and generated-file exclusions

@@ -10,9 +10,10 @@
 # -----------------------------
 
 from __future__ import annotations
-from dataclasses import dataclass, field, InitVar, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -26,7 +27,7 @@ try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except Exception:
     from backports.zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, ClassVar, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
@@ -323,25 +324,15 @@ class Appointment:
     dept_id: str
     start_dt: datetime  # timezone-aware
     end_dt: datetime    # timezone-aware
-    status: InitVar[str] = "scheduled"  # 'scheduled'|'completed'|'cancelled'
+    status: str = "scheduled"  # 'scheduled'|'completed'|'cancelled'
     reason: str = ""
-    _status: str = field(init=False, repr=False)
 
-    _VALID_STATUSES: Sequence[str] = ("scheduled", "completed", "cancelled")
+    _VALID_STATUSES: ClassVar[Tuple[str, ...]] = ("scheduled", "completed", "cancelled")
 
-    def __post_init__(self, status: str) -> None:
-        self.status = status
-
-    @property
-    def status(self) -> str:
-        """Return current appointment status."""
-        return self._status
-
-    @status.setter
-    def status(self, value: str) -> None:
-        if value not in self._VALID_STATUSES:
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "status" and value not in self._VALID_STATUSES:
             raise ValidationError(f"Invalid appointment status '{value}'. Allowed: {', '.join(self._VALID_STATUSES)}")
-        self._status = value
+        super().__setattr__(name, value)
 
 @dataclass
 class MedicalRecord:
@@ -385,25 +376,15 @@ class Bed:
 
     bed_id: str
     room_id: str
-    status: InitVar[str] = "free"  # 'free'|'occupied'|'cleaning'
+    status: str = "free"  # 'free'|'occupied'|'cleaning'
     occupant_patient_id: Optional[str] = None
-    _status: str = field(init=False, repr=False)
 
-    _VALID_STATUSES: Sequence[str] = ("free", "occupied", "cleaning")
+    _VALID_STATUSES: ClassVar[Tuple[str, ...]] = ("free", "occupied", "cleaning")
 
-    def __post_init__(self, status: str) -> None:
-        self.status = status
-
-    @property
-    def status(self) -> str:
-        """Current bed state with validation."""
-        return self._status
-
-    @status.setter
-    def status(self, value: str) -> None:
-        if value not in self._VALID_STATUSES:
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "status" and value not in self._VALID_STATUSES:
             raise ValidationError(f"Invalid bed status '{value}'. Allowed: {', '.join(self._VALID_STATUSES)}")
-        self._status = value
+        super().__setattr__(name, value)
 
 # Insurance and Billing
 @dataclass
@@ -863,12 +844,12 @@ def require_role(
     auth: Optional[AuthService] = None,
     token: Optional[str] = None,
 ) -> None:
-    """Verify role membership and optional session authenticity."""
-    if token is not None:
-        if auth is None:
-            raise AuthorizationError("Session token provided without auth service.")
-        if not auth.validate_session(user.user_id, token):
+    """Verify role membership and session authenticity when auth is supplied."""
+    if auth is not None:
+        if auth.users.get(user.user_id) is not user or not token or not auth.validate_session(user.user_id, token):
             raise AuthorizationError("Invalid or expired session token.")
+    elif token is not None:
+        raise AuthorizationError("Session token provided without auth service.")
     if not any(role in allowed for role in user.roles):
         raise AuthorizationError("insufficient role")
 
@@ -919,6 +900,8 @@ class AppointmentService:
         require_role(user, ["admin", "clerk", "doctor"], auth=self._auth, token=user.session_token)
         if start.tzinfo is None or end.tzinfo is None:
             raise TimezoneError("datetime must be timezone-aware")
+        if end <= start:
+            raise ValidationError("Appointment end time must be after its start time.")
         patient = self._patients.get(patient_id)
         doctor = self._doctors.get(doctor_id)
         _ = self._depts.get(dept_id)
@@ -952,6 +935,8 @@ class AppointmentService:
         """Mark an appointment as completed."""
         require_role(user, ["admin", "doctor", "nurse"], auth=self._auth, token=user.session_token)
         appt = self._appts.get(appt_id)
+        if appt.status != "scheduled":
+            raise ValidationError("Only scheduled appointments can be completed.")
         before = {"status": appt.status}
         appt.status = "completed"
         self._appts.update(appt)
@@ -1084,6 +1069,8 @@ class BillingService:
     def invoice(self, user: User, patient_id: str, code: str, amount: float, description: str) -> Charge:
         """Apply a charge using the appropriate billing strategy."""
         require_role(user, ["admin", "billing"], auth=self._auth, token=user.session_token)
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
+            raise ValidationError("Charge amount must be a positive finite number.")
         patient = self._patients.get(patient_id)
         account = self.ensure_account(patient_id)
         strategy = self._insurance_strategy if patient.insurance else self._default_strategy
@@ -1101,6 +1088,11 @@ class BillingService:
     def post_payment(self, user: User, patient_id: str, method: str, amount: float, reference: str = "") -> Payment:
         """Record a payment against a patient's account."""
         require_role(user, ["admin", "billing"], auth=self._auth, token=user.session_token)
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
+            raise ValidationError("Payment amount must be a positive finite number.")
+        if method not in ("cash", "card", "insurance"):
+            raise ValidationError("Unsupported payment method.")
+        self._patients.get(patient_id)
         account = self.ensure_account(patient_id)
         payment = Payment(method=method, amount=amount, dt=datetime.now(UTC), reference=reference)
         account.add_payment(payment)
@@ -1147,18 +1139,24 @@ class InpatientService:
     ) -> Bed:
         """Assign the first available bed to a patient."""
         require_role(user, ["admin", "nurse"], auth=self._auth, token=user.session_token)
+        if hours <= 0:
+            raise ValidationError("Admission duration must be positive.")
+        if start_dt is not None and start_dt.tzinfo is None:
+            raise TimezoneError("Admission start time must be timezone-aware.")
+        self._patients.get(patient_id)
+        if any(bed.occupant_patient_id == patient_id for bed in self._beds.all()):
+            raise SchedulingConflictError("Patient is already admitted.")
         next_bed = next((bed for bed in self._beds.all() if bed.status == "free"), None)
         if not next_bed:
             raise SchedulingConflictError("No beds available")
-        next_bed.status = "occupied"
-        next_bed.occupant_patient_id = patient_id
-        self._beds.update(next_bed)
-
         doctor = self._doctors.get(doctor_id)
         doctor_tz = get_timezone(doctor.timezone)
         start_local = start_dt.astimezone(doctor_tz) if start_dt else datetime.now(doctor_tz)
         block = TimeBlock(start_local, start_local + timedelta(hours=hours), f"Admission for {patient_id}", "admission")
         doctor.schedule.add_block(block, self._conflict_policy)
+        next_bed.status = "occupied"
+        next_bed.occupant_patient_id = patient_id
+        self._beds.update(next_bed)
         self._doctors.update(doctor)
         self._audit.log(
             AuditEvent.for_action(
@@ -1173,6 +1171,8 @@ class InpatientService:
         """Discharge a patient and mark the bed for cleaning."""
         require_role(user, ["admin", "nurse"], auth=self._auth, token=user.session_token)
         bed = self._beds.get(bed_id)
+        if bed.status != "occupied" or bed.occupant_patient_id is None:
+            raise ValidationError("Only occupied beds can be discharged.")
         bed.status = "cleaning"
         bed.occupant_patient_id = None
         self._beds.update(bed)
@@ -1220,6 +1220,16 @@ def create_physician(
     existing_user: Optional[User]=None,
 ) -> Tuple[Doctor, User]:
     get_timezone(timezone_name)  # validate
+    if existing_user is None:
+        if username is None or password is None:
+            raise ValidationError("Username and password required for new physician users.")
+        if username in ctx.users:
+            raise DuplicateError(f"Username already exists: {username}")
+    elif (
+        ctx.users.get(existing_user.user_id) is not existing_user
+        or not ctx.auth.validate_session(existing_user.user_id, existing_user.session_token or "")
+    ):
+        raise AuthorizationError("Physician account requires an active session.")
     dept = Department(dept_id=str(uuid.uuid4()), name=department_name, location=department_location)
     ctx.depts.add(dept)
     contact = {"email": email} if email else {}
@@ -1240,12 +1250,9 @@ def create_physician(
         existing_user.person_id = doctor.doctor_id
         user = existing_user
     else:
-        if username is None or password is None:
-            raise ValidationError("Username and password required for new physician users.")
-        if username in ctx.users:
-            raise DuplicateError(f"Username already exists: {username}")
         user = User(user_id=username, roles=["doctor", "clerk"], person_id=doctor.doctor_id)
         ctx.auth.register_user(user, password)
+        ctx.auth.authenticate(username, password)
     ctx.users[user.user_id] = user
     return doctor, user
 
@@ -1826,6 +1833,13 @@ def run_demo() -> str:
     clerk = ctx.users["clerk"]
     nurse = ctx.users["nurse"]
     doctor_user = ctx.users["doctor"]
+    for username, password in (
+        ("admin", "admin123"),
+        ("clerk", "clerk123"),
+        ("nurse", "nurse123"),
+        ("doctor", "doctor123"),
+    ):
+        ctx.auth.authenticate(username, password)
 
     cardio = Department(dept_id=str(uuid.uuid4()), name="Cardiology", location="SF Campus")
     depts.add(cardio)
@@ -2637,6 +2651,11 @@ class HospitalGUI(tk.Tk):
         self.show_start()
 
     def save_context_dialog(self) -> None:
+        if not self.current_user or not self.ctx.auth.validate_session(
+            self.current_user.user_id, self.current_user.session_token or ""
+        ):
+            self.show_message("Sign In Required", "Sign in before saving hospital data.", error=True)
+            return
         path = filedialog.asksaveasfilename(
             title="Save Hospital Data",
             defaultextension=".json",
@@ -2650,6 +2669,15 @@ class HospitalGUI(tk.Tk):
             self.show_message("Save Failed", str(exc), error=True)
             return
         self.show_toast(f"Saved to {os.path.basename(path)}.")
+
+    def prompt_save_new_account(self) -> None:
+        if messagebox.askyesno(
+            "Save New Account",
+            "This account exists only in the current session until you save hospital data. "
+            "Saved JSON is not encrypted; use synthetic data only. Save now?",
+            parent=self,
+        ):
+            self.save_context_dialog()
 
     def clear_container(self) -> None:
         for child in self.container.winfo_children():
@@ -2830,6 +2858,8 @@ class HospitalGUI(tk.Tk):
         ttk.Label(self.container, text="North American Hospital Management System", font=("Segoe UI", 18, "bold")).grid(row=0, column=0, columnspan=2, pady=(0, 20))
         ttk.Button(self.container, text="Staff Login", command=self.open_login).grid(row=1, column=0, sticky="ew", padx=10, pady=5)
         ttk.Button(self.container, text="Register New Physician", command=lambda: self.show_register_physician(None)).grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+        ttk.Button(self.container, text="Load Saved Data", command=self.load_context_dialog).grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
+        ttk.Label(self.container, text="New accounts are kept only for this session until you save hospital data.", wraplength=600).grid(row=3, column=0, columnspan=2, pady=10)
 
     # ---------- Authentication ----------
     def open_login(self) -> None:
@@ -2919,6 +2949,8 @@ class HospitalGUI(tk.Tk):
                 self.current_user = user
                 self.show_toast(f"Physician {doctor.name} registered.")
                 self.show_doctor_dashboard(doctor)
+                if existing_user is None:
+                    self.after_idle(self.prompt_save_new_account)
                 return True
             self.open_form("Register Physician", fields, on_submit)
 
@@ -3801,6 +3833,8 @@ class HospitalGUI(tk.Tk):
 
 
     def logout(self) -> None:
+        if self.current_user:
+            self.current_user.clear_sessions()
         self.current_user = None
         self.show_start()
 
