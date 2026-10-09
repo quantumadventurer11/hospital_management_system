@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import hashlib
 import hmac
 import secrets
@@ -97,6 +98,17 @@ try:
     ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 except Exception:
     pass
+
+
+def resolve_attachment_path(stored_path: str, root: Path = ATTACHMENTS_DIR) -> Path:
+    """Resolve a stored attachment without allowing paths outside its root."""
+    root_path = root.resolve()
+    candidate = (root_path / stored_path).resolve()
+    try:
+        candidate.relative_to(root_path)
+    except ValueError as exc:
+        raise ValidationError("Attachment path is outside the attachment folder.") from exc
+    return candidate
 
 def format_section(title: str, items: List[str]) -> str:
     return f"{title}:\n" + "\n".join(f"- {item}" for item in items)
@@ -905,6 +917,11 @@ class AppointmentService:
         patient = self._patients.get(patient_id)
         doctor = self._doctors.get(doctor_id)
         _ = self._depts.get(dept_id)
+        if "doctor" in user.roles and "admin" not in user.roles:
+            if user.person_id != doctor_id or patient.primary_doctor_id != doctor_id:
+                raise AuthorizationError("Doctor can book only their own patients and schedule.")
+        if doctor.department_id and doctor.department_id != dept_id:
+            raise ValidationError("Appointment department does not match the doctor's department.")
         doctor_tz = get_timezone(doctor.timezone)
         rng = (start.astimezone(doctor_tz), end.astimezone(doctor_tz))
         if not doctor.schedule.is_free(rng, self._conflict_policy):
@@ -935,6 +952,8 @@ class AppointmentService:
         """Mark an appointment as completed."""
         require_role(user, ["admin", "doctor", "nurse"], auth=self._auth, token=user.session_token)
         appt = self._appts.get(appt_id)
+        if "doctor" in user.roles and "admin" not in user.roles and user.person_id != appt.doctor_id:
+            raise AuthorizationError("Doctor can complete only their own appointments.")
         if appt.status != "scheduled":
             raise ValidationError("Only scheduled appointments can be completed.")
         before = {"status": appt.status}
@@ -965,20 +984,32 @@ class MedicalRecordService:
         """Read-only exposure of the attachment root path."""
         return self._attachments_dir
 
-    def ensure_record(self, patient_id: str) -> MedicalRecord:
+    def _require_patient_access(self, user: User, patient_id: str) -> Patient:
+        require_role(user, ["admin", "doctor", "nurse"], auth=self._auth, token=user.session_token)
+        patient = self._patients.get(patient_id)
+        if "doctor" in user.roles and "admin" not in user.roles:
+            if not user.person_id or patient.primary_doctor_id != user.person_id:
+                raise AuthorizationError("Doctor cannot access an unassigned patient.")
+        return patient
+
+    def ensure_record(self, user: User, patient_id: str) -> MedicalRecord:
         """Return the existing medical record or create a new chart."""
+        patient = self._require_patient_access(user, patient_id)
         for record in self._records.all():
             if record.patient_id == patient_id:
                 return record
-        patient = self._patients.get(patient_id)
         record = MedicalRecord(record_id=str(uuid.uuid4()), patient_id=patient.patient_id)
         self._records.add(record)
         return record
 
     def append_entry(self, user: User, patient_id: str, entry_type: str, notes: str, author_id: str) -> RecordEntry:
         """Append a structured clinical note."""
-        require_role(user, ["admin", "doctor", "nurse"], auth=self._auth, token=user.session_token)
-        record = self.ensure_record(patient_id)
+        self._require_patient_access(user, patient_id)
+        if "admin" not in user.roles:
+            expected_author = user.person_id if "doctor" in user.roles else user.user_id
+            if author_id != expected_author:
+                raise AuthorizationError("Record author must match the signed-in user.")
+        record = self.ensure_record(user, patient_id)
         entry = RecordEntry(
             entry_id=str(uuid.uuid4()),
             created_dt=datetime.now(UTC),
@@ -999,12 +1030,13 @@ class MedicalRecordService:
 
     def add_attachment(self, user: User, patient_id: str, source_path: str, note: str = "") -> RecordAttachment:
         """Store a binary attachment on the patient's chart."""
-        require_role(user, ["admin", "doctor", "nurse"], auth=self._auth, token=user.session_token)
-        record = self.ensure_record(patient_id)
+        self._require_patient_access(user, patient_id)
         src = Path(source_path)
         if not src.exists() or not src.is_file():
             raise FileNotFoundError(f"File not found: {source_path}")
-        patient_dir = self._attachments_dir / patient_id
+        record = self.ensure_record(user, patient_id)
+        # Hash the patient ID so an imported ID cannot become a filesystem path.
+        patient_dir = self._attachments_dir / hashlib.sha256(patient_id.encode("utf-8")).hexdigest()
         patient_dir.mkdir(parents=True, exist_ok=True)
         dest_name = f"{uuid.uuid4()}_{src.name}"
         dest_path = patient_dir / dest_name
@@ -1350,7 +1382,6 @@ def context_to_dict(ctx: SystemContext) -> Dict[str, Any]:
                 "user_id": user.user_id,
                 "roles": user.roles,
                 "person_id": user.person_id,
-                "password": user.password or "",
                 "password_hash": user.password_hash,
                 "password_salt": user.password_salt,
             }
@@ -1505,9 +1536,15 @@ def context_to_dict(ctx: SystemContext) -> Dict[str, Any]:
     return data
 
 def context_from_dict(data: Dict[str, Any]) -> SystemContext:
+    if not isinstance(data, dict):
+        raise ValidationError("Hospital data must be a JSON object.")
     ctx = initialize_system(seed_defaults=False)
     ctx.users.clear()
     for user_info in data.get("users", []):
+        if not isinstance(user_info, dict) or not isinstance(user_info.get("user_id"), str):
+            raise ValidationError("Saved user information is invalid.")
+        if user_info["user_id"] in ctx.users:
+            raise ValidationError("Duplicate user ID in hospital data.")
         user = User(
             user_id=user_info["user_id"],
             roles=user_info.get("roles", []),
@@ -1515,17 +1552,18 @@ def context_from_dict(data: Dict[str, Any]) -> SystemContext:
         )
         password_hash = user_info.get("password_hash")
         password_salt = user_info.get("password_salt")
-        if password_hash and password_salt:
-            user.password = ""
-            user.password_hash = password_hash
-            user.password_salt = password_salt
-            user.clear_sessions()
-            ctx.users[user.user_id] = user
-        else:
-            password = user_info.get("password", "password")
-            ctx.auth.register_user(user, password)
-        if user.user_id not in ctx.users:
-            ctx.users[user.user_id] = user
+        if not isinstance(password_hash, str) or not isinstance(password_salt, str):
+            raise ValidationError("Saved user is missing a password hash or salt.")
+        try:
+            hash_bytes = bytes.fromhex(password_hash)
+            salt_bytes = bytes.fromhex(password_salt)
+        except ValueError as exc:
+            raise ValidationError("Saved user credentials are invalid.") from exc
+        if len(hash_bytes) != 32 or len(salt_bytes) != 16:
+            raise ValidationError("Saved user credentials have invalid lengths.")
+        user.password_hash = password_hash
+        user.password_salt = password_salt
+        ctx.users[user.user_id] = user
     for provider in data.get("providers", []):
         ctx.providers.add(
             InsuranceProvider(
@@ -1685,18 +1723,33 @@ def context_from_dict(data: Dict[str, Any]) -> SystemContext:
             after=ev.get("after"),
         )
         logged = ctx.audit.log(event)
-        expected_prev = ev.get("prev_hash")
-        expected_hash = ev.get("event_hash")
-        if expected_prev and logged.prev_hash != expected_prev:
+        if "prev_hash" not in ev or "event_hash" not in ev:
+            raise ValidationError("Audit log event is missing its chain hash.")
+        expected_prev = ev["prev_hash"]
+        expected_hash = ev["event_hash"]
+        if logged.prev_hash != expected_prev:
             raise ValidationError("Audit log chain mismatch detected while loading data.")
-        if expected_hash and logged.event_hash != expected_hash:
+        if logged.event_hash != expected_hash:
             raise ValidationError("Audit log hash mismatch detected while loading data.")
     return ctx
 
 def save_context_to_file(ctx: SystemContext, path: str) -> None:
     payload = context_to_dict(ctx)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2)
+    target = Path(path)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=target.parent, prefix=f".{target.name}.",
+            suffix=".tmp", delete=False,
+        ) as fh:
+            temporary_path = Path(fh.name)
+            json.dump(payload, fh, indent=2, allow_nan=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary_path, target)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 def load_context_from_file(path: str) -> SystemContext:
     with open(path, "r", encoding="utf-8") as fh:
@@ -1858,6 +1911,7 @@ def run_demo() -> str:
         timezone="America/Los_Angeles",
     )
     doctors.add(doc)
+    doctor_user.person_id = doc.doctor_id
 
     provider = providers.get("us_blueshield_ca")
     policy = InsurancePolicy(policy_id=str(uuid.uuid4()), provider=provider, plan="PPO Gold", member_no="BSCA-0001", copay_percent=0.1)
@@ -1910,6 +1964,9 @@ def run_demo() -> str:
         timezone="America/Halifax",
     )
     doctors.add(doc_east)
+    east_user = User(user_id="doctor_east", roles=["doctor"], person_id=doc_east.doctor_id)
+    ctx.auth.register_user(east_user, "demo_east123")
+    ctx.auth.authenticate(east_user.user_id, "demo_east123")
 
     provider_ca = providers.get("ca_bluecross_ns")
     policy_ca = InsurancePolicy(policy_id=str(uuid.uuid4()), provider=provider_ca, plan="Atlantic Wellness", member_no="BCNS-9001", copay_percent=0.15)
@@ -1938,8 +1995,8 @@ def run_demo() -> str:
     tele_end_utc = tele_end_halifax.astimezone(UTC)
     tele_appt = appt_svc.book(clerk, pat_ca.patient_id, doc_east.doctor_id, cardio.dept_id, tele_start_utc, tele_end_utc, "Telehealth rehab consult")
 
-    appt_svc.complete(doctor_user, tele_appt.appt_id)
-    _ = rec_svc.append_entry(doctor_user, pat_ca.patient_id, "diagnosis", "Remote rehab plan updated.", author_id=doc_east.doctor_id)
+    appt_svc.complete(east_user, tele_appt.appt_id)
+    _ = rec_svc.append_entry(east_user, pat_ca.patient_id, "diagnosis", "Remote rehab plan updated.", author_id=doc_east.doctor_id)
 
     bill_svc.invoice(admin, pat_ca.patient_id, code="Q0506", amount=200.0, description="Telehealth consult")
     bill_svc.post_payment(admin, pat_ca.patient_id, method="card", amount=60.0, reference="RCPT-445")
@@ -3359,7 +3416,7 @@ class HospitalGUI(tk.Tk):
         patient = self.select_patient_for_doctor(doctor, "Select Patient for Attachments")
         if not patient:
             return
-        record = self.ctx.rec_svc.ensure_record(patient.patient_id)
+        record = self.ctx.rec_svc.ensure_record(self.current_user, patient.patient_id)
         if not record.attachments:
             self.show_message("No Attachments", "No documents are attached to this record.", error=True)
             return
@@ -3403,10 +3460,12 @@ class HospitalGUI(tk.Tk):
         win.grab_set()
 
     def open_attachment_file(self, attachment: RecordAttachment) -> None:
-        path = Path(attachment.stored_path)
-        if not path.is_absolute():
-            path = ATTACHMENTS_DIR / path
-        if not path.exists():
+        try:
+            path = resolve_attachment_path(attachment.stored_path)
+        except ValidationError as exc:
+            self.show_message("Invalid Attachment", str(exc), error=True)
+            return
+        if not path.is_file():
             self.show_message("Missing File", f"File not found: {path}", error=True)
             return
         try:

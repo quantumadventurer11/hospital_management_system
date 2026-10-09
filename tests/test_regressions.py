@@ -136,6 +136,96 @@ class HospitalRegressionTests(unittest.TestCase):
             self.ctx.ip_svc.discharge(self.admin, bed.bed_id)
         self.assertEqual(bed.status, "free")
 
+    def test_doctor_cannot_access_another_doctors_patient(self):
+        other_doctor = h.Doctor(
+            "other-person", "Other Doctor", datetime(1980, 1, 1, tzinfo=h.UTC),
+            "U", {}, department_id=self.dept.dept_id, timezone="UTC",
+        )
+        self.ctx.doctors.add(other_doctor)
+        other_patient = h.Patient(
+            "other-patient", "Other Patient", datetime(1990, 1, 1, tzinfo=h.UTC),
+            "U", {}, primary_doctor_id=other_doctor.doctor_id,
+        )
+        self.ctx.patients.add(other_patient)
+        doctor_user = h.User("assigned-doctor", ["doctor", "clerk"], person_id=self.doctor.doctor_id)
+        self.ctx.auth.register_user(doctor_user, "test-password")
+        self.ctx.auth.authenticate(doctor_user.user_id, "test-password")
+        start = datetime.now(h.UTC) + timedelta(days=1)
+
+        with self.assertRaises(h.AuthorizationError):
+            self.ctx.appt_svc.book(doctor_user, other_patient.patient_id,
+                                   other_doctor.doctor_id, self.dept.dept_id,
+                                   start, start + timedelta(minutes=30), "test")
+        with self.assertRaises(h.AuthorizationError):
+            self.ctx.rec_svc.ensure_record(doctor_user, other_patient.patient_id)
+        with self.assertRaises(h.AuthorizationError):
+            self.ctx.rec_svc.append_entry(doctor_user, other_patient.patient_id,
+                                          "visit", "wrong patient", other_doctor.doctor_id)
+        appointment = self.ctx.appt_svc.book(
+            self.admin, other_patient.patient_id, other_doctor.doctor_id,
+            self.dept.dept_id, start, start + timedelta(minutes=30), "test",
+        )
+        with self.assertRaises(h.AuthorizationError):
+            self.ctx.appt_svc.complete(doctor_user, appointment.appt_id)
+        self.assertEqual(len(list(self.ctx.records.all())), 0)
+        self.assertEqual(appointment.status, "scheduled")
+
+    def test_doctor_cannot_claim_another_author(self):
+        doctor_user = h.User("assigned-doctor", ["doctor"], person_id=self.doctor.doctor_id)
+        self.ctx.auth.register_user(doctor_user, "test-password")
+        self.ctx.auth.authenticate(doctor_user.user_id, "test-password")
+        with self.assertRaises(h.AuthorizationError):
+            self.ctx.rec_svc.append_entry(doctor_user, self.patient.patient_id,
+                                          "visit", "test", "someone-else")
+        self.assertEqual(len(list(self.ctx.records.all())), 0)
+        entry = self.ctx.rec_svc.append_entry(doctor_user, self.patient.patient_id,
+                                               "visit", "test", self.doctor.doctor_id)
+        self.assertEqual(entry.author_id, self.doctor.doctor_id)
+
+    def test_missing_saved_credentials_are_rejected(self):
+        with self.assertRaises(h.ValidationError):
+            h.context_from_dict({"users": [{"user_id": "surprise_admin", "roles": ["admin"]}]})
+
+    def test_missing_audit_hash_is_rejected(self):
+        self.ctx.bill_svc.invoice(self.admin, self.patient.patient_id, "T", 10, "test")
+        data = h.context_to_dict(self.ctx)
+        del data["audit"][0]["event_hash"]
+        with self.assertRaises(h.ValidationError):
+            h.context_from_dict(data)
+
+    def test_failed_save_preserves_previous_file(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "synthetic-hospital-data.json"
+            h.save_context_to_file(self.ctx, str(path))
+            previous_bytes = path.read_bytes()
+            self.patient.contact_info["bad"] = object()
+            with self.assertRaises(TypeError):
+                h.save_context_to_file(self.ctx, str(path))
+            self.assertEqual(path.read_bytes(), previous_bytes)
+            self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
+    def test_attachment_paths_stay_inside_attachment_folder(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "attachments"
+            source = Path(tmp) / "synthetic.txt"
+            source.write_text("synthetic test content", encoding="utf-8")
+            unusual_patient = h.Patient(
+                "person", "Synthetic Patient", datetime(1990, 1, 1, tzinfo=h.UTC),
+                "U", {}, patient_id="../outside", primary_doctor_id=self.doctor.doctor_id,
+            )
+            self.ctx.patients.add(unusual_patient)
+            self.ctx.rec_svc._attachments_dir = root
+            attachment = self.ctx.rec_svc.add_attachment(
+                self.admin, unusual_patient.patient_id, str(source),
+            )
+            saved = h.resolve_attachment_path(attachment.stored_path, root)
+            self.assertTrue(saved.is_file())
+            self.assertEqual(saved.read_text(encoding="utf-8"), "synthetic test content")
+            with self.assertRaises(h.ValidationError):
+                h.resolve_attachment_path("../synthetic.txt", root)
+            with self.assertRaises(h.ValidationError):
+                h.resolve_attachment_path(str(source), root)
+
 
 if __name__ == "__main__":
     unittest.main()

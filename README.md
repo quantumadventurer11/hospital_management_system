@@ -32,6 +32,7 @@ The GUI starts with demonstration accounts (`admin`, `clerk`, `nurse`, and `doct
 ## Data handling and limitations
 
 - Saving writes patient, clinical, billing, credential-hash, and audit information as readable JSON. Choose a location appropriate for **synthetic** demo data, and do not publish save files.
+- A save replaces an existing file only after the new JSON is fully written. Loading requires saved accounts to include valid password hashes and salts; plaintext-only legacy account files are not supported.
 - Attachments are copied to `hospital_attachments/` relative to the working directory. A JSON save contains attachment paths, not the attachment bytes, so moving the JSON file by itself can break links.
 - The audit chain can detect some changes to a saved history, but it is not independently protected against someone who can rewrite the file.
 - The built-in smoke check covers a few successful paths and scheduling conflicts. The regression suite covers specific bugs, but neither is a comprehensive test suite.

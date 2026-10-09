@@ -8,16 +8,19 @@
 - Booking rejects reversed time ranges; billing rejects nonpositive or nonfinite amounts and unsupported payment methods.
 - Failed admissions no longer leave a bed occupied after a schedule conflict.
 - Completing an appointment twice and discharging a free bed are rejected.
+- Clinical service actions now check a doctor's patient and appointment assignments and prevent another author's ID on notes.
+- Loading rejects users without valid stored password hashes and audit events without chain hashes. Saving replaces the target only after a complete temporary write.
+- Attachment files are kept within the attachment folder, even if imported data contains unusual IDs or paths.
 - Regression tests cover these cases; run `python -m unittest discover -s tests -v`.
 
 ## Next: patient data and access
 
-- Check patient and clinician relationships for clinical actions, rather than relying on a role alone.
+- Apply patient-scope checks to every read and analytics path; repository objects are still directly accessible inside the desktop process.
 - Design protected storage and backup for saved data and attachments. JSON currently contains clinical, financial, and credential-hash data and is written without encryption.
 - Remove predictable seed credentials from any mode intended beyond a local demo.
 - Decide how to protect audit integrity independently of an editable JSON file.
 
-**Done when:** out-of-scope clinical actions are denied in tests, and saved data and attachments have a documented protection and recovery design.
+**Done when:** all patient views enforce the same scope rules, and saved data and attachments have a documented protection and recovery design.
 
 ## Next: domain and workflow rules
 
@@ -31,7 +34,7 @@
 ## Next: maintainability and presentation
 
 - Move domain models, repositories, services, persistence, and GUI into separate modules while keeping behavior stable.
-- Extend automated tests to cover clinician scope, save/load failures, audit history, and the GUI; run them in CI.
+- Extend automated tests to cover more audit and GUI paths, and run them in CI.
 - Define supported Python versions and installation requirements, especially Tkinter and regional time-zone data. Expose the existing CLI function if that interface remains part of the project.
 - Add screenshots or a short screen recording using synthetic data, and describe design choices and lessons learned for a portfolio audience.
 
