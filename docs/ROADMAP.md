@@ -33,7 +33,7 @@
 
 ## Next: maintainability and presentation
 
-- Move domain models, repositories, services, persistence, and GUI into separate modules while keeping behavior stable.
+- Domain models, repositories, services, security, context wiring, persistence, GUI, CLI, and demos now live in `hospital/`; `hospital_management_system.py` keeps the established entry points. The GUI is grouped into shared, doctor, and staff modules. Save/load dialog success and failure paths now have automated checks. Extend coverage for remaining interactive workflows as those areas change.
 - Extend automated tests to cover more audit and GUI paths, and run them in CI.
 - Define supported Python versions and installation requirements, especially Tkinter and regional time-zone data. Expose the existing CLI function if that interface remains part of the project.
 - Add screenshots or a short screen recording using synthetic data, and describe design choices and lessons learned for a portfolio audience.

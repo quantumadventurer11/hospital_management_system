@@ -35,7 +35,7 @@ class HospitalRegressionTests(unittest.TestCase):
         self.assertEqual(user.person_id, doctor.doctor_id)
         self.assertTrue(self.ctx.auth.validate_session(user.user_id, user.session_token))
         self.assertIsNotNone(self.ctx.auth.authenticate("newdoctor", "test-password"))
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
             path = Path(tmp) / "synthetic-hospital-data.json"
             h.save_context_to_file(self.ctx, str(path))
             restored = h.load_context_from_file(str(path))
@@ -194,7 +194,7 @@ class HospitalRegressionTests(unittest.TestCase):
             h.context_from_dict(data)
 
     def test_failed_save_preserves_previous_file(self):
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
             path = Path(tmp) / "synthetic-hospital-data.json"
             h.save_context_to_file(self.ctx, str(path))
             previous_bytes = path.read_bytes()
@@ -205,7 +205,7 @@ class HospitalRegressionTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
 
     def test_attachment_paths_stay_inside_attachment_folder(self):
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
             root = Path(tmp) / "attachments"
             source = Path(tmp) / "synthetic.txt"
             source.write_text("synthetic test content", encoding="utf-8")

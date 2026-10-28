@@ -1,12 +1,12 @@
 # Hospital Management System
 
-An educational Python prototype exploring appointment scheduling, clinical records, billing, inpatient beds, role-based actions, and an audit trail. The project is a single-file application with a Tkinter desktop interface, a scripted demo, a built-in smoke check, and regression tests.
+An educational Python prototype exploring appointment scheduling, clinical records, billing, inpatient beds, role-based actions, and an audit trail. The code is separated into a `hospital` package. `hospital_management_system.py` is a short entry point that starts the GUI, scripted demo, or smoke check.
 
 > **Use synthetic data only.** This is a course project, not a production hospital system. Its saved JSON and copied attachments are not encrypted, and the current authorization, validation, and persistence behavior needs more work before any real patient information could be used. An ignore file reduces accidental commits but does not secure local data.
 
 ## Run it
 
-The application was checked with Python 3.13. Python's Tkinter module and an IANA time-zone database must be available for the desktop interface and correct regional time handling. On some systems, Tkinter needs a separate operating-system package. The source also has optional fallbacks for `backports.zoneinfo` and `typing_extensions` on older Python versions; those versions have not been verified here.
+The application was checked with Python 3.13. Run commands from the repository root so Python can import the `hospital` package. Python's Tkinter module and an IANA time-zone database must be available for the desktop interface and correct regional time handling. On some systems, Tkinter needs a separate operating-system package. The source also has optional fallbacks for `backports.zoneinfo` and `typing_extensions` on older Python versions; those versions have not been verified here.
 
 ```bash
 python hospital_management_system.py --smoke-test
@@ -16,6 +16,10 @@ python hospital_management_system.py
 ```
 
 The last command opens the Tkinter GUI; `--smoke-test` runs lightweight integration checks, and `--demo` prints a scripted example. A `run_cli()` function is present in the source, but the current command-line entry point does not expose it.
+
+New to Python projects? Read [How the application is organized](docs/ARCHITECTURE.md) for a plain-language tour of the files and a booking example.
+
+The desktop interface uses a shared light theme, clear section headings, action cards, and compact activity counts. High contrast mode remains available from the **View** menu.
 
 Newly registered accounts stay in memory until you explicitly save hospital data. The registration flow offers to save, and **Load Saved Data** on the start screen restores a saved account after restarting the app. A save file is unencrypted JSON, so use synthetic data only.
 
@@ -43,8 +47,26 @@ For specific code and security improvements, see [the prioritized roadmap](docs/
 ## Repository layout
 
 ```text
-hospital_management_system.py  Application, demo, and built-in smoke check
-tests/test_regressions.py     Account and workflow regression checks
+hospital_management_system.py  Short entry point and compatibility imports
+hospital/attachments.py       Attachment path handling
+hospital/context.py           System wiring and registration workflows
+hospital/errors.py             Shared application exceptions
+hospital/timezones.py          Time-zone choices and fallback lookup
+hospital/domain.py             OOP entities, value objects, and scheduling/billing policies
+hospital/repositories.py       Typed in-memory repository classes
+hospital/security.py           User, authentication, and audit classes
+hospital/services.py           Appointment, record, billing, and inpatient services
+hospital/persistence.py        JSON save/load and context serialization
+hospital/templates.py          Synthetic form templates and text formatting
+hospital/demo.py               Scripted demo and built-in smoke check
+hospital/cli.py                Interactive text menu functions
+hospital/gui.py                Tkinter window assembly and startup
+hospital/gui_theme.py          Shared colors, type, buttons, and tabs
+hospital/gui_common.py         Shared GUI controls and dialogs
+hospital/gui_doctor.py         Login and doctor screens
+hospital/gui_staff.py          Clerk, nurse, billing, and admin screens
+tests/                         Workflow and module-boundary regression checks
+docs/ARCHITECTURE.md           Beginner's guide to the code layout
 README.md                      Setup, scope, and limitations
 docs/ROADMAP.md                Proposed improvement plan
 .gitignore                     Local data and generated-file exclusions
